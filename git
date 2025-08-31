@@ -1,0 +1,202 @@
+version: "3.9"
+services:
+  db:
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_USER: threatwatch
+      POSTGRES_PASSWORD: threatwatch
+      POSTGRES_DB: threatwatch
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  backend:
+    build: ./backend
+    restart: always
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgres://threatwatch:threatwatch@db:5432/threatwatch
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    restart: always
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+fastapi
+uvicorn[standard]
+psycopg2-binary
+sqlalchemy
+alembic
+pydantic
+cryptography
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
+import os
+
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://threatwatch:threatwatch@localhost:5432/threatwatch")
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+Base = declarative_base()
+from sqlalchemy import Column, String, Float, TIMESTAMP, Text, ARRAY
+from sqlalchemy.dialects.postgresql import UUID
+import uuid
+from .db import Base
+
+class ThreatItem(Base):
+    __tablename__ = "threat_item"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source_platform = Column(String, nullable=False)
+    source_post_id = Column(String, nullable=False)
+    source_author_handle_enc = Column(Text, nullable=False)
+    source_author_handle_hash = Column(String, nullable=False)
+    source_url = Column(String, nullable=False)
+    content = Column(Text, nullable=False)
+    content_lang = Column(String)
+    created_at_utc = Column(TIMESTAMP, nullable=False)
+    model_score_threat = Column(Float, nullable=False)
+    model_score_targeted = Column(Float, nullable=False)
+    model_score_credibility = Column(Float, nullable=False)
+    labels = Column(ARRAY(String), default=[])
+    target_entity = Column(String)
+    immutable_evidence_sha256 = Column(String, nullable=False)
+import re
+
+violent_patterns = [
+    r"\bkill\b", r"\bshoot\b", r"\bexecute\b", r"\bhang\b", r"\bblow up\b",
+    r"\bstab\b", r"\bbeat (?:the )?shit out of\b",
+]
+
+def classify_text(text: str):
+    t = sum(bool(re.search(p, text, re.I)) for p in violent_patterns)
+    threat = min(1.0, 0.15 + 0.2 * t)
+    targeted = 0.1 + (0.3 if "@" in text or "you" in text.lower() else 0)
+    credibility = 0.1 + (0.2 if any(w in text.lower() for w in ["will", "going to"]) else 0)
+    return dict(threat=threat, targeted=targeted, credibility=credibility)
+import re
+
+violent_patterns = [
+    r"\bkill\b", r"\bshoot\b", r"\bexecute\b", r"\bhang\b", r"\bblow up\b",
+    r"\bstab\b", r"\bbeat (?:the )?shit out of\b",
+]
+
+def classify_text(text: str):
+    t = sum(bool(re.search(p, text, re.I)) for p in violent_patterns)
+    threat = min(1.0, 0.15 + 0.2 * t)
+    targeted = 0.1 + (0.3 if "@" in text or "you" in text.lower() else 0)
+    credibility = 0.1 + (0.2 if any(w in text.lower() for w in ["will", "going to"]) else 0)
+    return dict(threat=threat, targeted=targeted, credibility=credibility)
+from fastapi import FastAPI
+from pydantic import BaseModel
+from .classifier import classify_text
+
+app = FastAPI(title="ThreatWatch API")
+
+class TextRequest(BaseModel):
+    text: str
+
+@app.get("/")
+def root():
+    return {"msg": "ThreatWatch API running"}
+
+@app.post("/classify")
+def classify(req: TextRequest):
+    return classify_text(req.text)
+FROM node:20-alpine
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm install
+COPY . .
+CMD ["npm", "run", "dev"]
+{
+  "name": "threatwatch-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000"
+  },
+  "dependencies": {
+    "next": "14.2.5",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "tailwindcss": "^3.4.0",
+    "shadcn-ui": "^0.6.0"
+  }
+}
+{
+  "name": "threatwatch-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000"
+  },
+  "dependencies": {
+    "next": "14.2.5",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "tailwindcss": "^3.4.0",
+    "shadcn-ui": "^0.6.0"
+  }
+}
+"use client";
+import { useState, useEffect } from "react";
+
+export default function Home() {
+  const [text, setText] = useState("");
+  const [result, setResult] = useState<any>(null);
+
+  const classify = async () => {
+    const res = await fetch("http://localhost:8000/classify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text })
+    });
+    setResult(await res.json());
+  };
+
+  return (
+    <div className="p-10 space-y-6">
+      <h1 className="text-3xl font-bold">ThreatWatch Dashboard</h1>
+      <textarea
+        className="border p-2 w-full rounded"
+        rows={4}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder="Paste suspicious post text here..."
+      />
+      <button
+        onClick={classify}
+        className="bg-blue-600 text-white px-4 py-2 rounded"
+      >
+        Analyze
+      </button>
+      {result && (
+        <div className="mt-4 p-4 border rounded bg-gray-50">
+          <p><strong>Threat:</strong> {result.threat.toFixed(2)}</p>
+          <p><strong>Targeted:</strong> {result.targeted.toFixed(2)}</p>
+          <p><strong>Credibility:</strong> {result.credibility.toFixed(2)}</p>
+        </div>
+      )}
+    </div>
+  );
+}
